@@ -495,5 +495,133 @@ def weather_crop_advisory():
         return jsonify({"detail": f"Weather advisory failed: {exc}"}), 500
 
 
+
+@app.post("/market-prices")
+def market_prices():
+    if not api_key:
+        return jsonify({"detail": "GEMINI_API_KEY is not set on the server."}), 500
+
+    body = request.get_json(silent=True) or {}
+    location = str(body.get("location") or "India").strip()
+    commodity = str(body.get("commodity") or "").strip()
+
+    if not location:
+        return jsonify({"detail": "Field 'location' is required."}), 400
+
+    # Build search query
+    if commodity:
+        search_query = f"Current market price of {commodity} in {location} today"
+    else:
+        search_query = f"Current market prices of vegetables and agricultural commodities in {location} today"
+
+    prompt = (
+        f"Find current market prices for agricultural commodities in {location}. "
+        f"Search query: {search_query}. "
+        "Use internet search to get the most recent and accurate pricing information from reliable sources like government mandi boards, agricultural market websites, or official price reporting systems. "
+        "Return STRICTLY valid JSON with this schema: "
+        "{"
+        "\"location\":\"...\","
+        "\"date\":\"...\","
+        "\"prices\":["
+        "{"
+        "\"commodity\":\"...\","
+        "\"variety\":\"...\","
+        "\"unit\":\"...\","
+        "\"min_price\":number,"
+        "\"max_price\":number,"
+        "\"modal_price\":number,"
+        "\"market\":\"...\","
+        "\"trend\":\"rising|falling|stable\""
+        "}"
+        "],"
+        "\"source\":\"...\","
+        "\"last_updated\":\"...\""
+        "}. "
+        f"Focus on: {commodity if commodity else 'common vegetables and crops like tomato, onion, potato, rice, wheat'}. "
+        "Include prices in Indian Rupees (₹) per quintal or per kg as appropriate. "
+        "If specific commodity is requested, prioritize that commodity but include related varieties."
+    )
+
+    base_payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.2,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    # Try with different search tool configurations
+    payload_variants = [
+        {**base_payload, "tools": [{"google_search": {}}]},
+        {**base_payload, "tools": [{"google_search_retrieval": {}}]},
+        base_payload,
+    ]
+
+    try:
+        response = None
+        last_error = None
+
+        for payload in payload_variants:
+            try:
+                candidate_response = requests.post(
+                    GEMINI_URL,
+                    params={"key": api_key},
+                    headers={"Content-Type": "application/json"},
+                    json=payload,
+                    timeout=120,
+                )
+                candidate_response.raise_for_status()
+                response = candidate_response
+                break
+            except requests.HTTPError as http_exc:
+                last_error = http_exc
+                status_code = getattr(http_exc.response, "status_code", None)
+                if status_code != 400:
+                    raise
+
+        if response is None:
+            raise last_error if last_error else RuntimeError("No successful Gemini response")
+
+        response_json = response.json()
+        raw_text = (
+            response_json.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+            .strip()
+        )
+
+        cleaned_text = raw_text.replace("```json", "").replace("```", "").strip()
+
+        try:
+            result = json.loads(cleaned_text)
+            if "prices" not in result or not isinstance(result["prices"], list):
+                raise ValueError("Missing or invalid 'prices' field")
+            return jsonify(result)
+        except Exception:
+            return (
+                jsonify(
+                    {
+                        "location": location,
+                        "commodity": commodity,
+                        "prices": [],
+                        "raw_response": raw_text,
+                        "detail": "Could not parse structured JSON. The response may contain useful information in raw_response field."
+                    }
+                ),
+                200,
+            )
+
+    except Exception as exc:
+        return jsonify({"detail": f"Market price request failed: {exc}"}), 500
+
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8000")), debug=True)
