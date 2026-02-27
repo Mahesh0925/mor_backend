@@ -21,6 +21,60 @@ WEATHER_FORECAST_URL = "http://api.weatherapi.com/v1/forecast.json"
 @app.get("/")
 def health_check():
     return jsonify({"message": "Crop Disease Detection API is running"})
+@app.get("/test-api-keys")
+def test_api_keys():
+    """Test endpoint to verify API keys are loaded and working"""
+    results = {
+        "gemini_api_key_loaded": bool(api_key),
+        "gemini_api_key_preview": f"{api_key[:20]}..." if api_key else "Not set",
+        "weather_api_key_loaded": bool(weather_api_key),
+        "weather_api_key_preview": f"{weather_api_key[:10]}..." if weather_api_key else "Not set",
+    }
+
+    # Test Gemini API
+    if api_key:
+        try:
+            test_payload = {
+                "contents": [{"parts": [{"text": "Say hello"}]}],
+                "generationConfig": {"temperature": 0.1},
+            }
+            response = requests.post(
+                GEMINI_URL,
+                params={"key": api_key},
+                headers={"Content-Type": "application/json"},
+                json=test_payload,
+                timeout=10,
+            )
+            if response.status_code == 200:
+                results["gemini_api_status"] = "✅ Working"
+            else:
+                results["gemini_api_status"] = f"❌ Failed: {response.status_code}"
+                results["gemini_error"] = response.text[:200]
+        except Exception as e:
+            results["gemini_api_status"] = f"❌ Error: {str(e)[:100]}"
+    else:
+        results["gemini_api_status"] = "❌ API key not set"
+
+    # Test Weather API
+    if weather_api_key:
+        try:
+            response = requests.get(
+                WEATHER_FORECAST_URL,
+                params={"key": weather_api_key, "q": "London", "days": 1},
+                timeout=10,
+            )
+            if response.status_code == 200:
+                results["weather_api_status"] = "✅ Working"
+            else:
+                results["weather_api_status"] = f"❌ Failed: {response.status_code}"
+                results["weather_error"] = response.text[:200]
+        except Exception as e:
+            results["weather_api_status"] = f"❌ Error: {str(e)[:100]}"
+    else:
+        results["weather_api_status"] = "❌ API key not set"
+
+    return jsonify(results)
+
 
 
 @app.post("/detect-disease")
